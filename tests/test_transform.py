@@ -1,4 +1,5 @@
 import pytest
+import torch
 from torch.testing import assert_allclose
 from .fixtures import *
 from math import ceil

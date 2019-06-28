@@ -1,5 +1,6 @@
 from fastai.basics import *
 from abc import ABC, abstractmethod
+from typing import Union
 import librosa
 import torchaudio
 from librosa.display import specshow, waveplot
@@ -224,6 +225,8 @@ class AudioLabelLists(LabelLists):
                   dl_tfms:Optional[Collection[Callable]]=None, device:torch.device=None, collate_fn:Callable=data_collate,
                   no_check:bool=False, **kwargs)->'AudioDataBunch':
         "Create an `AudioDataBunch` from self, `path` will override `self.path`, `kwargs` are passed to `DataBunch.create`."
+        # TODO: Investigate circular dependency issue here and try to move this checking out
+        from .transform import ToDevice
         use_gpu = ToDevice in map(lambda t: t.__class__, self.tfms)
         if use_gpu and num_workers != 0: # TODO: See why this doesn't work
             warn("GPU transforms cannot be used with multiple workers, overriding num_workers.")
