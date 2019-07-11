@@ -3,7 +3,7 @@ import torch
 from torch.testing import assert_allclose
 from .fixtures import *
 from math import ceil
-from unittest.mock import Mock, sentinel
+from unittest.mock import Mock, sentinel, call
 
 from fastai.basics import *
 from fastai_audio.data import *
@@ -60,11 +60,12 @@ class TestToFreq():
     def test_output_shape(self, make_sine, n_samples, n_fft, hop_length):
         samples = Tensor(make_sine(sr=16000, n_samples=n_samples), device="cpu")
         assert len(samples) == n_samples
-        ad = AudioTimeData(samples, 16000)
+        ad = AudioTimeData(samples[None,:], 16000)
         tf = ToFreq(n_fft=n_fft, hop_length=hop_length)
         res = tf.process(ad)
         n_frames = (n_samples // hop_length) + 1
-        assert res.shape == (ceil(1+n_fft/2), # Frequencies
+        assert res.shape == (1, # Channels
+                             ceil(1+n_fft/2), # Frequencies
                              n_frames) # Frames
 
     def test_info(self):

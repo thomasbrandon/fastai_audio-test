@@ -36,7 +36,7 @@ class AudioDataKind(IntEnum):
 
     @property
     def display(self):
-        return 'time-domain' if self is TIME else 'frequency-domain'
+        return 'time-domain' if self is self.TIME else 'frequency-domain'
 
 
 class AudioDataInfo(dict):
@@ -103,6 +103,8 @@ class AudioData(ABC):
 class AudioTimeData(AudioData):
     '''Represents a time-domain audio signal'''
     def __init__(self, sig, rate):
+        assert len(sig.shape) == 2, f"Signal should be of shape Channels x Time, but got {sig.shape}."
+        if sig.shape[0] > 20: warn(f"Signal should be of shape Channels x Time, but got {sig.shape}.")
         super().__init__(AudioDataKind.TIME, sig, rate)
         
     def __str__(self): return f'{self.__class__.__name__}: {self.duration}s ({len(self)}); {self.channels}ch; {self.rate/1000:.0f}kHz'
@@ -133,6 +135,8 @@ AudioDataKind.register_item(AudioDataKind.TIME, AudioTimeData)
 class AudioFreqData(AudioData):
     '''Represents a frequency-domain audio signal.'''
     def __init__(self, sig, rate, phase=None):
+        assert len(sig.shape) == 3, f"Signal should be of shape Channels x Frequency x Time, but got {sig.shape}."
+        if sig.shape[0] > 20: warn(f"Signal should be of shape Channels x Frequency x Time, but got {sig.shape}.")
         super().__init__(AudioDataKind.FREQ, sig, rate)
         self.phase = phase
 
@@ -201,6 +205,23 @@ class AudioDataBunch(DataBunch):
     def output_info(self):
         return self.train_dl.x.output_info
 
+    @property
+    def input_kind(self):
+        return self.train_dl.x.data_info.kind
+
+    def one_item(self, item, detach=False, denorm=False, cpu=False):
+        if isinstance(item, (Tensor,np.ndarray)):
+            raise ValueError(f"To process tensor or array data please construct an {self.input_kind.item_cls.__name__} first.")
+        # Pathlike data
+        if isinstance(item, str): item = Path(item)
+        if isinstance(item, os.PathLike):
+            if not item.exists() and (self.path/item).exists():
+                item = (self.path/item)
+            item = AudioTimeData.load(item)
+        if isinstance(item, AudioData): item = AudioItem(item)
+        else: raise TypeError(f"Expected a path-like or AudioData or AudioItem object but got {item.__class__.__qualname__}.")
+        return super().one_item(item, detach=detach, denorm=denorm, cpu=cpu)
+
     @classmethod
     def create(cls, train_ds:Dataset, valid_ds:Dataset, test_ds:Optional[Dataset]=None, path:PathOrStr='.', bs:int=64,
                val_bs:int=None, num_workers:int=defaults.cpus, dl_tfms:Optional[Collection[Callable]]=None,
@@ -213,6 +234,9 @@ class AudioDataBunch(DataBunch):
             kwargs['pin_memory'] = False
         data = super().create(train_ds, valid_ds, test_ds=test_ds, path=path, bs=bs, val_bs=val_bs, num_workers=num_workers,
                               device=device, collate_fn=collate_fn, no_check=no_check, **kwargs)
+        #FIXME: Fastai doesn't pass kwargs to single_dl so it doesn't respect pin_memory logic above
+        if todev and todev[-1].device.type == 'cuda':
+            data.single_dl.dl.pin_memory = False
         return data
 
 class AudioLabelList(LabelList):
@@ -355,7 +379,7 @@ class AudioList(ItemList):
     
     def show_xyzs(self, xs, ys, zs, imgsize:int=4, figsize:Optional[Tuple[int,int]]=None, **kwargs):
         raise NotImplementedError()# TODO: Implement
-            
+
     # TODO: example with from_folder
     @classmethod
     def from_folder(cls, path:PathOrStr='.', extensions:Collection[str]=None, duration:Optional[float]=None,
