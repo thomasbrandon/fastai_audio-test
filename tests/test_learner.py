@@ -8,7 +8,7 @@ from unittest.mock import Mock
 @pytest.mark.parametrize('bias', [True,False])
 @pytest.mark.parametrize('sizes', [(3,3),(5,5)])
 def test_adapt_conv(orig_channels, n_channels, pretrained, init, bias, sizes):
-    attrs = {n: sizes for n in ['kernel_size','stride','padding']}
+    attrs = {n: sizes for n in ['kernel_size','stride','padding']} # Nonsensical, just testing parameters used
     conv = torch.nn.Conv2d(orig_channels, 10, bias=bias, **attrs)
     wgts = torch.rand_like(conv.weight.data)
     if pretrained: conv.weight.data = wgts

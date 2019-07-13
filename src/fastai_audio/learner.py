@@ -12,8 +12,9 @@ def adapt_conv(conv: Conv2d, n_channels:int, pretrained:bool=False,
     if conv.in_channels == n_channels: return conv # No need to adapt
     args = {n: getattr(conv, n) for n in ['kernel_size','stride','padding','dilation','groups']}
     bias = conv.bias is not None
-    pm = ifnone(padding_mode, conv.padding_mode)
-    new_conv = Conv2d(n_channels, conv.out_channels, bias=bias, padding_mode=pm, **args)
+    if 'padding_mode' in Conv2d.__constants__: # Padding mode added in PyTorch 1.1
+        args['padding_mode'] = ifnone(padding_mode, conv.padding_mode)
+    new_conv = Conv2d(n_channels, conv.out_channels, bias=bias, **args)
     if pretrained:
         exp_shape = (conv.out_channels, conv.in_channels, *conv.kernel_size)
         assert conv.weight.shape == exp_shape, f"Unexpected weights shape, expected {exp_shape}, got {conv.weight.shape}."
@@ -28,8 +29,10 @@ def adapt_model(model:Union[Module,Sequential], n_channels:int, name:str='conv1'
                    pretrained:bool=False, init:Optional[Callable]=None, padding_mode:str='zeros'):
     '''Adapt a convolutional model to `n_channels` inputs and copy weights if `pretrained` or initialise with `init`.'''
     # Find direct parent of first conv layer. Could be either a Sequential or a custom Module (but not the Conv itself)
-    while ( isinstance(model, Sequential) and 
-           (isinstance(model[0], (Sequential,Module)) and not isinstance(model[0], Conv2d))): model = model[0]
+    while (isinstance(model, Sequential) and 
+           isinstance(model[0], (Sequential,Module)) and
+           not isinstance(model[0], Conv2d)):
+        model = model[0]
     if isinstance(model, Sequential) and isinstance(model[0], Conv2d):
         conv1 = model[0]
         def update(conv): model[0] = conv
