@@ -1,14 +1,15 @@
-from .data import AudioData, AudioTimeData, AudioFreqData, AudioDataKind, AudioDataInfo
+from .data import AudioList, AudioItem, AudioData, AudioTimeData, AudioFreqData, AudioDataKind, AudioDataInfo
 from fastai.basics import *
 from abc import ABC, abstractmethod
 from math import floor
 from warnings import warn
-from typing import Iterable, Generator, Union
+from typing import Iterable, Generator, Union, Optional
 import torch.nn.functional as F
 import librosa
 from .torchaudio_contrib import magphase, amplitude_to_db, MelFilterbank, apply_filterbank
 
-__all__ = ['AudioTransform','AudioTransforms','ToDevice','ToFreq','ToDb','ToMel','PadTo','PadTrim','ToMono','Resample','Mask']
+__all__ = ['AudioTransform','AudioTransforms','ToDevice','ToFreq','ToDb','ToLog','ToMel','PadTo','PadTrim',
+           'ToMono','Resample','Mask','AudioStatistics','StatsRecorder','RecordStats','collect_stats','Normalize']
 
 TIME,FREQ = AudioDataKind.TIME,AudioDataKind.FREQ
     
@@ -168,8 +169,24 @@ class ToDb(AudioTransform):
         return data
 
     def process_info(self, info:AudioDataInfo)->AudioDataInfo:
+        return super().process_info(info).update({'y_scale': 'db'})
+
+class ToLog(AudioTransform):
+    '''Convert a signal to logirthmic scale computing `log10(scale * S + eps)` for signal S.'''
+
+    def __init__(self, scale:float=1.0, eps:float=1e-7):
+        super().__init__(kind=None)
+        self.scale,self.eps = scale,eps
+
+    def process(self, data:AudioData)->AudioData:
+        if self.scale != 1.0: data.sig.mul_(self.scale)
+        data.sig.add_(self.eps).log10_()
+        return data
+
+    def process_info(self, info:AudioDataInfo)->AudioDataInfo:
         return super().process_info(info).update({'y_scale': 'log'})
 
+# TODO: Fix it so doesn't error if procesS_info is not called before process
 class ToMel(AudioTransform):
     '''Converts a spectrogram to mel-scaling. See `librosa.feature.melspectrogram`'''
 
@@ -291,11 +308,6 @@ class PadTrim(AudioTransform):
     def process_info(self, info:AudioDataInfo)->AudioDataInfo:
         return super().process_info(info).update({'duration': self.to})
 
-# class Normalize(AudioTransform):
-#     def __init__(self, mean, std):
-#         super().__init__(TIME)
-#         self.mean,self.std = mean,std
-
 def check_transform_info(info: AudioDataInfo, tfms:Collection[AudioTransform]):
     msgs = []
     def msg(prob, opt=None, tfm=None):
@@ -348,3 +360,152 @@ class Mask(AudioTransform):
     def process(self, data:AudioFreqData):
         mask_(data.sig, self.n_f, self.max_f, self.n_t, self.max_t, self.val)
         return data
+
+# Statistics and Normalisation
+
+@dataclass
+class AudioStatistics():
+    n_items: int
+    mean: Tensor
+    var: Tensor
+    std: Tensor
+    min: Optional[Tensor]
+    max: Optional[Tensor]
+
+    @property
+    def values(self):
+        vals = {}
+        agg = len(self.mean.shape) > 1
+        for n in ['mean','var','std']:
+            v = getattr(self,n)
+            if agg: v = v.mean()
+            vals[n] = v.item()
+        if self.min is not None:
+            vals['min'] = (self.min.min() if agg else self.min).item()
+            vals['max'] = (self.max.max() if agg else self.max).item()
+        return vals
+
+    def __str__(self):
+        if self.n_items == 0: return "No statistics collected."
+        agg = len(self.mean.shape) > 1
+        s = (f"Statistics of {self.n_items} items"
+            + (f" (aggregate of {'x'.join(map(str,self.mean.shape))} data)"
+               if agg else '')
+            + ":\n")
+        vals = self.values
+        # Align values on decimal point
+        fvs = {n: (     f'{v:3.3f}' if 1e4>abs(v)>1e-4
+                   else f'{v:.3e}'
+                  ).split('.') for n,v in vals.items()}
+        mdp = max([len(v[0]) for v in fvs.values()])
+        ml = max(map(len, fvs.keys()))
+        s += '\n'.join([f" {n:>{ml}}: {w:>{mdp}}.{d}" for n,(w,d) in fvs.items()])
+        return s
+
+class StatsRecorder:
+    '''Records mean and variance of the final dimension over other dimensions across items. So collecting across `(m,n,o)` sized
+       items will collect `(m,n)` sized statistics.
+
+       Uses the algorithm from Chan, Golub, and LeVeque in "Algorithms for computing the sample variance: analysis and recommendations":
+
+       `variance = variance1 + variance2 + n/(m*(m+n)) * pow(((m/n)*t1 - t2), 2)`
+
+       This combines the variance for 2 blocks: block 1 having `n` elements with `variance1` and a sum of `t1` and block 2 having `m` elements
+       with `variance2` and a sum of `t2`. The algorithm is proven to be numerically stable but there is a reasonable loss of accuracy (~0.1% error).
+
+       Note that collecting minimum and maximum values is reasonably innefficient, adding about 80% to the running time, and hence is disabled by default.
+    '''
+    def __init__(self, record_range=False):
+        self.n_items,self.n,self._range = 0,0,record_range
+        self.nvar,self.sum,self.min,self.max = None,None,None,None
+    
+    def update(self, data):
+        self.n_items += 1
+        with torch.no_grad():
+            new_n,new_var,new_sum = data.shape[-1],data.var(-1),data.sum(-1)
+            if self.n == 0:
+                self.n = new_n
+                self._shape = data.shape[:-1]
+                self._sum = new_sum
+                self._nvar = new_var.mul_(new_n)
+                if self._range:
+                    self.min = data.min(-1)[0]
+                    self.max = data.max(-1)[0]
+            else:
+                assert data.shape[:-1] == self._shape, "Mismatched shapes, expected {self._shape} but got {data._shape[:-1]}."
+                ratio = self.n / new_n
+                t = (self._sum / ratio).sub_(new_sum).pow_(2)
+                self._nvar.add_(new_n, new_var).add_(ratio / (self.n + new_n), t)
+                self._sum.add_(new_sum)
+                self.n += new_n
+                if self._range:
+                    self.min = torch.min(self.min, data.min(-1)[0])
+                    self.max = torch.max(self.max, data.max(-1)[0])
+
+    @property
+    def mean(self): return self._sum / self.n if self.n > 0 else None
+    @property
+    def var(self): return self._nvar / self.n if self.n > 0 else None
+    @property
+    def std(self): return self.var.sqrt() if self.n > 0 else None
+
+    @property
+    def stats(self):
+        return AudioStatistics(
+            self.n_items, self.mean, self.var, self.std,
+            self.min if self._range else None,
+            self.max if self._range else None,
+        )
+
+class RecordStats(AudioTransform):
+    '''A transform that records statistics (mean, variance, range) of items. Items can be any shape
+       but must all be the same shape, statistics are computed across the last dimension.'''
+    def __init__(self, record_range=False):
+        super().__init__(kind=None)
+        self.stats = StatsRecorder(record_range=record_range)
+
+    def process(self, data:AudioData)->AudioData:
+        self.stats.update(data.sig)
+        return data
+
+AudioCollection = Union[AudioList,Collection[Union[AudioItem,AudioData,Tensor]]]
+
+def tfmed_items(items: AudioCollection, tfms: TfmList=None, progress=False):
+    if progress: items = progress_bar(items)
+    for it in items:
+        if isinstance(it, AudioItem): 
+            yield it.apply_tfms(tfms).data
+        else:
+            if isinstance(it, AudioData): it = it.sig
+            assert isinstance(it, Tensor), "Items should be a collection of tensors or audio items."
+            for tfm in ifnone(tfms, []): it = tfm(it)
+            yield it
+
+def collect_stats(data: AudioCollection, tfms: TfmList=None,
+                  record_range=False, progress=True) -> AudioStatistics:
+    '''Collect statistics on the items in `data` (e.g. an `AudioList`), after applying optional `tfms`.'''
+    rec = StatsRecorder(record_range=record_range)
+    for it in tfmed_items(data, tfms, progress):
+        rec.update(it)
+    return rec.stats
+
+class Normalize(AudioTransform):
+    def __init__(self, stats:Union[AudioStatistics,Tuple[Union[float,Tensor],Union[float,Tensor]]]):
+        super().__init__(None)
+        if isinstance(stats, AudioStatistics):
+            mean,std = stats.mean,stats.std
+        else:
+            mean,std = Tensor(stats[0]),Tensor(stats[1])
+        # Need singleton final dimension for broadcasting
+        if mean.ndim != 0 and mean.shape[-1] != 1: mean = mean[...,None]
+        if  std.ndim != 0 and  std.shape[-1] != 1: std  =  std[...,None]
+        self.mean,self.std = PerDeviceTensor(mean),PerDeviceTensor(std)
+
+    def process(self, data:AudioData)->AudioData:
+        dev = data.sig.device
+        data.sig.sub_(self.mean[dev])\
+                .div_(self.std[dev])
+        return data
+
+    def process_info(self, info):
+        return super().process_info(info).update({'norm_stats':(self.mean,self.std)})

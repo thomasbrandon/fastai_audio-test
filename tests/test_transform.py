@@ -3,7 +3,7 @@ import torch
 from torch.testing import assert_allclose
 from .fixtures import *
 from math import ceil
-from unittest.mock import Mock, sentinel, call
+from unittest.mock import Mock, PropertyMock, sentinel, call
 
 from fastai.basics import *
 from fastai_audio.data import *
@@ -115,3 +115,41 @@ class TestTransforms():
         ad = Mock(spec=AudioData)
         assert tfm(ad) is sentinel.proced # Call instance
         tfm.process.assert_called_once_with(ad)
+
+def test_stats_recorder():
+    data = torch.rand(100,100)
+    sr = StatsRecorder(record_range=True)
+    for i in range(100):
+        sr.update(data[i,:])
+    assert_allclose(sr.mean, data.mean())
+    assert_allclose(sr.var, data.var(), atol=1e-3, rtol=1e-3)
+    assert sr.std == sr.var.sqrt()
+
+def test_stats_recorder_md():
+    data = torch.rand(10, 100,100)
+    sr = StatsRecorder(record_range=True)
+    for i in range(100):
+        sr.update(data[:,i,:])
+    assert list(sr._shape) == [10]
+    d = data.view(10, -1)
+    assert_allclose(sr.mean, d.mean(dim=-1))
+    assert_allclose(sr.var, d.var(dim=-1), atol=1e-3, rtol=1e-3)
+    assert sr.std.equal(sr.var.sqrt())
+
+def test_collect_stats(mocker, make_mock_audio_list):
+    # Mock StatsRecorder to return itself for stats
+    def create_sr(**kwargs):
+        sr = Mock(spec=StatsRecorder)
+        sr.stats._rec = sr
+        return sr
+    SR = mocker.patch('fastai_audio.transform.StatsRecorder', spec=True, side_effect=create_sr)
+    (al,items) = make_mock_audio_list()
+    for it in items:
+        it.__tfmed = Mock(spec=AudioItem, name= it.__name+'_tfmed')
+        it.apply_tfms.return_value = it.__tfmed
+    # Pass Record
+    res = collect_stats(al, sentinel.tfms, progress=False)
+    calls = [call(it.__tfmed.data) for it in items]
+    res._rec.update.assert_has_calls(calls)
+    for it in items:
+        it.apply_tfms.assert_called_once_with(sentinel.tfms)
