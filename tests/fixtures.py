@@ -38,11 +38,11 @@ def make_sample_folder(tmp_path_factory, make_sine_file):
 
 @pytest.fixture
 def make_mock_audio_list():
-    '''Creates a mock `AudioList`. Returns `(Audioist,items)`.'''
+    '''Creates an `AudioList` full of mock `AudioItems`. Returns `(AudioList,items)`.'''
     def make(n=5):
-        items = [Mock(spec=AudioItem, name=f'item{i}') for i in range(n)]
+        items = [Mock(spec=AudioItem, name=f'item{i}', __name=f'item{i}') for i in range(n)]
         al = AudioList(np.array(items), check_info=False)
-        al.get = Mock(side_effect=items)
+        al.open = Mock(side_effect=lambda x: x) # Just return mock items
         return (al,items)
     return make
 

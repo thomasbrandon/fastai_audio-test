@@ -19,13 +19,12 @@ class TestAudioTimeData():
 
 class TestAudioList():
     def test_from_folder(self, mocker, make_sample_folder):
-        (folder,files) = make_sample_folder()
-        mock_open = mocker.patch('fastai_audio.data.AudioList.open', return_value=sentinel.open_ret)
+        (folder,items) = make_sample_folder()
+        mock_open = mocker.patch('fastai_audio.data.AudioList.open', side_effect=lambda p: Mock(spec=AudioItem, _path=p))
         al = AudioList.from_folder(folder)
-        assert len(al) == len(files)
-        for i in range(len(al)): assert al.get(i) == sentinel.open_ret
-        assert mock_open.call_count == len(files)
-        for (f,_) in files:
+        assert len(al) == len(items)
+        assert mock_open.call_count == len(items)
+        for (f,_) in items:
             mock_open.assert_any_call(f)
 
     @pytest.mark.parametrize('num_items,max_cols', [(3,5),(5,5),(5,3),(11,5)])
@@ -63,19 +62,3 @@ def test_AudioDataInfo():
         adi.val1 = 1
     with pytest.raises(TypeError, match=".*Do not update values on an AudioDataInfo attribute.*"):
         adi['val1'] = 0
-
-
-#FIXME: Not really testing our code
-def test_transform(mock_audio_list):
-    (al,items) = mock_audio_list
-    for it in items: it.apply_tfms.return_value = sentinel.retval
-    lls = al.split_none().label_const(0)
-    tfm = Mock(spec=AudioTransform)
-    tfm.process.retval = sentinel.proc_ret
-    tfm.use_on_y = False #TODO: Probably shouldn't be required by ImageLists.transform
-    tfmed = lls.transform(([tfm],None))
-    for (it,_) in tfmed.train:
-        assert it == sentinel.retval
-    for it in items:
-        it.apply_tfms.assert_called_once_with([tfm])
-
