@@ -48,7 +48,7 @@ def adapt_model(model:Union[Module,Sequential], n_channels:int, name:str='conv1'
        initialise weights with `init`.'''
     # Find direct parent of first conv layer. Could be either a Sequential or a custom Module (but not the Conv itself)
     while (isinstance(model, Sequential) and 
-               isinstance(model[0], (Sequential,Module)) and
+           isinstance(model[0], (Sequential,Module)) and
            not isinstance(model[0], Conv2d)):
         model = model[0]
     if isinstance(model, Sequential) and isinstance(model[0], Conv2d):
