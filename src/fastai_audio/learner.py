@@ -8,7 +8,7 @@ __all__ = ['adapt_weights','adapt_conv','adapt_model','audio_cnn_learner']
 # TODO: Investigate other weight selection methods, e.g. diversity of activations
 
 def adapt_weights(cur_wgts: Tensor, n_channels:int)->Tensor:
-    '''Adapt the `cur` weights to `n_channels` input channels. Weights are of shape
+    '''Adapt `cur_wgts` to `n_channels` input. Weights are of shape
        `(out_channels, in_channels, *kernel_size)`.'''
     n_cur = cur_wgts.shape[1]
     new_idxs = [c % n_cur for c in range(n_channels)]
