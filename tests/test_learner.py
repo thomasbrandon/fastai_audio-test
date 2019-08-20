@@ -21,7 +21,7 @@ def test_adapt_conv(orig_channels, n_channels, pretrained, init, bias, sizes):
         assert(new_conv.in_channels == n_channels)
         for a in attrs: assert getattr(conv, a) == getattr(new_conv, a)
         if pretrained:
-            assert torch.equal(*torch.broadcast_tensors(new_conv.weight.data, wgts[:,0:1,:,:]))
+            assert torch.equal(new_conv.weight.data, adapt_weights(conv.weight.data, n_channels))
         if init: init_fn.assert_called_with(new_conv.weight)
 
 @pytest.mark.parametrize('nest', [0,1,3])
